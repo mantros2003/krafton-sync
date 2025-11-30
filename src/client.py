@@ -12,7 +12,6 @@ LATENCY_DELAY = 0.2
 # 100ms buffering for smoothness (Total delay = Latency + Buffer)
 INTERPOLATION_OFFSET = 0.1
 
-# --- PYGAME SETUP ---
 pygame.init()
 WIDTH, HEIGHT = 800, 800
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -20,7 +19,6 @@ pygame.display.set_caption("Krafton Test - Client")
 clock = pygame.time.Clock()
 font = pygame.font.SysFont("Arial", 18)
 
-# --- NETWORK CLASSES ---
 class NetworkManager:
     """Handles the connection and simulates the 200ms lag on SENDING data"""
     def __init__(self):
@@ -28,8 +26,8 @@ class NetworkManager:
         self.sock.connect((SERVER_IP, SERVER_PORT))
         self.sock.setblocking(False)
         
-        self.outgoing_queue = deque() # Stores (send_time, data)
-        self.incoming_buffer = []     # Stores raw received bytes
+        self.outgoing_queue = deque()
+        self.incoming_buffer = []
         self.running = True
 
         # Start the thread that manages the simulated lag for sending
@@ -58,24 +56,17 @@ class NetworkManager:
                 time.sleep(0.001)
 
     def receive_updates(self):
-        """Reads from socket, prints system messages, returns list of new JSON snapshots"""
         try:
-            # Basic non-blocking receive
             data = self.sock.recv(4096)
             if not data: return []
             
-            # Handling TCP fragmentation (split by newline)
             messages = data.decode('utf-8').strip().split('\n')
             snapshots = []
             
             for msg in messages:
-                if not msg.strip(): continue # Skip empty lines
-                
+                if not msg.strip(): continue
                 try:
                     msg_obj = json.loads(msg)
-                    
-                    # Check the Message Type
-                    # Use .get() to avoid errors if the key is missing
                     msg_type = msg_obj.get("type", "UNKNOWN")
                     
                     if msg_type == "UPDATE":
@@ -84,22 +75,29 @@ class NetworkManager:
                     elif msg_type == "SYSTEM":
                         content = msg_obj.get("msg", "")
                         if content == "START":
-                            print(f"\n{'='*20}\nGAME STARTED!\n{'='*20}\n")
+                            print(f"\n[SYSTEM] GAME STARTED!\n")
+                        elif content == "RESET":
+                            print(f"\n[SYSTEM] Player left. Returning to Lobby...\n")
+                            snapshots.append({"type": "RESET_SIGNAL"})
                             
                 except json.JSONDecodeError:
                     pass
-                    
             return snapshots
             
         except BlockingIOError:
             return []
         except Exception as e:
-            print(f"Network Error: {e}")
             return []
 
 class GameState:
     """Stores the latest known world state and handles smoothing"""
     def __init__(self):
+        self.snapshots = []
+        self.display_players = {}
+        self.display_coin = {"x": -100, "y": -100}
+    
+    def reset(self):
+        """Clears history to reset the view"""
         self.snapshots = []
         self.display_players = {}
         self.display_coin = {"x": -100, "y": -100}
@@ -183,7 +181,10 @@ def main():
         # NETWORK RECEIVE
         new_snaps = network.receive_updates()
         for snap in new_snaps:
-            game_state.add_snapshot(snap)
+            if snap.get("type") == "RESET_SIGNAL":
+                game_state.reset()
+            else:
+                game_state.add_snapshot(snap)
 
         # INTERPOLATION
         game_state.interpolate()

@@ -6,7 +6,6 @@ import random
 import math
 from collections import deque
 
-# --- CONFIGURATION ---
 HOST = '127.0.0.1'
 PORT = 5555
 LATENCY_DELAY = 0.2
@@ -14,15 +13,13 @@ MAP_SIZE = 800
 PLAYER_SPEED = 5
 PLAYER_RADIUS = 20
 COIN_RADIUS = 15
-REQUIRED_PLAYERS = 2  # Lobby Requirement [cite: 14]
+REQUIRED_PLAYERS = 2
 
-# --- GLOBAL STATE ---
 players = {}
 coin = {"x": 400, "y": 300}
 connected_clients = []
-game_state = "LOBBY_WAITING"  # Initial State
+game_state = "LOBBY_WAITING"
 
-# --- LATENCY SIMULATION QUEUES ---
 incoming_lag_queue = deque()
 outgoing_lag_queue = deque()
 
@@ -45,70 +42,79 @@ def resolve_collision(p_id):
 
 def process_game_logic():
     """Main Game Loop: Handles Lobby & Gameplay"""
-    global game_state
+    global game_state, coin
 
     print("Server: Waiting for players...")
     
     while True:
         current_time = time.time()
         
-        # --- LOBBY LOGIC ---
         if game_state == "LOBBY_WAITING":
             if len(players) >= REQUIRED_PLAYERS:
                 print("Lobby Full. Auto-starting game...")
                 game_state = "GAME_RUNNING"
                 
-                # Optional: Broadcast start message immediately (bypassing lag for system msgs)
+                # Broadcast START message
                 start_msg = json.dumps({"type": "SYSTEM", "msg": "START"}).encode()
                 for sock in connected_clients:
                     try: sock.sendall(start_msg + b'\n')
                     except: pass
             else:
-                time.sleep(1) # Check once per second while waiting
+                time.sleep(1)
                 continue
 
-        # --- GAMEPLAY LOGIC ---
-        
-        # 1. PROCESS DELAYED INPUTS
-        while incoming_lag_queue and incoming_lag_queue[0][0] <= current_time:
-            _, p_id, data = incoming_lag_queue.popleft()
-            
-            if p_id not in players: continue
-            
-            try:
-                cmd = data.decode('utf-8').strip()
-                if cmd == 'L': players[p_id]["x"] -= PLAYER_SPEED
-                elif cmd == 'R': players[p_id]["x"] += PLAYER_SPEED
-                elif cmd == 'U': players[p_id]["y"] -= PLAYER_SPEED
-                elif cmd == 'D': players[p_id]["y"] += PLAYER_SPEED
+        elif game_state == "GAME_RUNNING":
+            if len(players) < REQUIRED_PLAYERS:
+                print("Player disconnected. Resetting to Lobby...")
+                game_state = "LOBBY_WAITING"
                 
-                # Bounds & Collision
-                players[p_id]["x"] = max(0, min(MAP_SIZE, players[p_id]["x"]))
-                players[p_id]["y"] = max(0, min(MAP_SIZE, players[p_id]["y"]))
-                resolve_collision(p_id)
+                incoming_lag_queue.clear()
+                outgoing_lag_queue.clear()
                 
-            except Exception as e:
-                print(f"Error processing input: {e}")
+                for p_id in players:
+                    players[p_id]["score"] = 0
+                    players[p_id]["x"] = 100
+                    players[p_id]["y"] = 100
+                
+                reset_msg = json.dumps({"type": "SYSTEM", "msg": "RESET"}).encode()
+                for sock in connected_clients:
+                    try: sock.sendall(reset_msg + b'\n')
+                    except:
+                        pass
+                continue
 
-        # 2. PREPARE STATE BROADCAST
-        # Note: We wrap the state in a "type" field so client knows it's a game update
-        state_snapshot = {
-            "type": "UPDATE",
-            "timestamp": current_time,
-            "players": players,
-            "coin": coin
-        }
-        serialized_state = json.dumps(state_snapshot).encode('utf-8')
-        
-        # 3. SCHEDULE DELAYED BROADCAST
-        send_time = current_time + LATENCY_DELAY
-        
-        # NOTE: This effectively copies the "output_bridge" logic into the main loop
-        # to ensure state synchronization happens exactly at tick rate.
-        for sock in list(connected_clients): # Use list() copy for thread safety
-             outgoing_lag_queue.append((send_time, sock, serialized_state))
+            while incoming_lag_queue and incoming_lag_queue[0][0] <= current_time:
+                _, p_id, data = incoming_lag_queue.popleft()
+                
+                if p_id not in players: continue
+                
+                try:
+                    cmd = data.decode('utf-8').strip()
+                    if cmd == 'L': players[p_id]["x"] -= PLAYER_SPEED
+                    elif cmd == 'R': players[p_id]["x"] += PLAYER_SPEED
+                    elif cmd == 'U': players[p_id]["y"] -= PLAYER_SPEED
+                    elif cmd == 'D': players[p_id]["y"] += PLAYER_SPEED
+                    
+                    players[p_id]["x"] = max(0, min(MAP_SIZE, players[p_id]["x"]))
+                    players[p_id]["y"] = max(0, min(MAP_SIZE, players[p_id]["y"]))
+                    resolve_collision(p_id)
+                    
+                except Exception as e:
+                    print(f"Error processing input: {e}")
 
-        time.sleep(1/60)
+            state_snapshot = {
+                "type": "UPDATE",
+                "timestamp": current_time,
+                "players": players,
+                "coin": coin
+            }
+            serialized_state = json.dumps(state_snapshot).encode('utf-8')
+            
+            send_time = current_time + LATENCY_DELAY
+            for sock in list(connected_clients):
+                 outgoing_lag_queue.append((send_time, sock, serialized_state))
+
+            time.sleep(1/60)
 
 def sender_thread_logic():
     """Dedicated thread to push data out of sockets after delay"""
@@ -134,10 +140,9 @@ def handle_client_connection(client_socket, addr):
     print(f"New connection: {addr}")
     p_id = str(addr[1])
     
-    # Add to global lists
     connected_clients.append(client_socket)
     players[p_id] = {
-        "x": 100 if len(connected_clients) == 1 else 600, # Spawn 2nd player far away
+        "x": 100 if len(connected_clients) == 1 else 600,
         "y": 100 if len(connected_clients) == 1 else 600, 
         "score": 0, 
         "color": (0, 255, 0) if len(connected_clients) == 1 else (0, 0, 255) # Green vs Blue
